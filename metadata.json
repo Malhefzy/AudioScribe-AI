@@ -1,0 +1,5 @@
+{
+  "name": "AudioScribe AI",
+  "description": "Long-form audio transcription and speaker identification using Gemini Files API.",
+  "requestFramePermissions": []
+}
