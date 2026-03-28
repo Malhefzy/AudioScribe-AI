@@ -1,5 +1,3 @@
-import React from 'react';
-
 // Helper to extract approx font size from tailwind width classes to maintain consistency
 // without needing to rewrite every usage site in the app.
 const getFontSize = (className: string = '') => {
@@ -74,4 +72,36 @@ export const PencilIcon = ({ className }: { className?: string }) => (
 
 export const CloseIcon = ({ className }: { className?: string }) => (
   <MaterialIcon name="close" className={className} />
+);
+
+export const PlayIcon = ({ className }: { className?: string }) => (
+  <MaterialIcon name="play_arrow" className={className} />
+);
+
+export const PauseIcon = ({ className }: { className?: string }) => (
+  <MaterialIcon name="pause" className={className} />
+);
+
+export const StopIcon = ({ className }: { className?: string }) => (
+  <MaterialIcon name="stop" className={className} />
+);
+
+export const SkipBackIcon = ({ className }: { className?: string }) => (
+  <MaterialIcon name="replay_10" className={className} />
+);
+
+export const SkipForwardIcon = ({ className }: { className?: string }) => (
+  <MaterialIcon name="forward_10" className={className} />
+);
+
+export const MarkerIcon = ({ className }: { className?: string }) => (
+  <MaterialIcon name="push_pin" className={className} />
+);
+
+export const DeleteIcon = ({ className }: { className?: string }) => (
+  <MaterialIcon name="delete" className={className} />
+);
+
+export const ScissorsIcon = ({ className }: { className?: string }) => (
+  <MaterialIcon name="content_cut" className={className} />
 );

@@ -20,13 +20,24 @@ const TranscriptionView: React.FC<TranscriptionViewProps> = ({
   const [isConfiguring, setIsConfiguring] = useState(true);
   
   // Extract unique speakers from the initial markdown
+  // Matches: **Speaker 1** OR Speaker 1:
   const speakers = useMemo(() => {
-    const regex = /\*\*(Speaker \d+)\*\*/g;
+    // Regex explanation:
+    // (?:\*\*|__)?   -> Optional opening bold/italic marker (non-capturing)
+    // (Speaker \d+)  -> Capture "Speaker N"
+    // (?:\*\*|__)?   -> Optional closing bold/italic marker (non-capturing)
+    // :?             -> Optional colon
+    const regex = /(?:\*\*|__)?(Speaker \d+)(?:\*\*|__)?/g;
+
     const found = new Set<string>();
     let match;
     while ((match = regex.exec(initialMarkdown)) !== null) {
+      // Filter out false positives like "Speaker 1" in the middle of a sentence
+      // We assume labels are likely at start of line or followed by colon/newline
+      // But for the list, we just collect unique distinct numbers found.
       found.add(match[1]);
     }
+
     return Array.from(found).sort((a, b) => {
         const numA = parseInt(a.replace('Speaker ', '')) || 0;
         const numB = parseInt(b.replace('Speaker ', '')) || 0;
@@ -37,10 +48,23 @@ const TranscriptionView: React.FC<TranscriptionViewProps> = ({
   // Compute the markdown for export/display
   const exportMarkdown = useMemo(() => {
     let result = initialMarkdown;
+
+    // 1. Fix formatting: Ensure double newlines before speaker labels if missing.
+    // Handles various formats:
+    // - **Speaker 1** [00:00]:
+    // - [00:00] **Speaker 1**: (in case model ignores instructions)
+    // - Speaker 1:
+    const formatRegex = /([^\n])\s*((?:\[\d{2}:\d{2}(?::\d{2})?\]\s*)?(?:\*\*|__)?Speaker \d+(?:\*\*|__)?)/g;
+    result = result.replace(formatRegex, '$1\n\n$2');
+
+    // 2. Apply Renaming
     Object.entries(speakerMap).forEach(([original, newName]) => {
-      if (newName.trim()) {
-        const regex = new RegExp(`\\*\\*${original}\\*\\*`, 'g');
-        result = result.replace(regex, `**${newName}**`);
+      if ((newName as string).trim()) {
+        // Replace strict patterns to avoid replacing text in content
+        // We look for the speaker label optionally surrounded by formatting
+        // We do NOT consume the colon or timestamp following it, just the name.
+        const replaceRegex = new RegExp(`(?:\\*\\*|__)?${original}(?:\\*\\*|__)?`, 'g');
+        result = result.replace(replaceRegex, `**${newName}**`);
       }
     });
     return result;

@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { UploadIcon, FileAudioIcon } from './Icons';
+import { UploadIcon } from './Icons';
 
 interface FileUploadProps {
   onFileSelect: (file: File) => void;
