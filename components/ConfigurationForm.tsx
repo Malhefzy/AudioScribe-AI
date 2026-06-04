@@ -9,15 +9,21 @@ interface ConfigurationFormProps {
 }
 
 // ── Models ────────────────────────────────────────────────────────────────────
-// Source: https://ai.google.dev/gemini-api/docs/audio  (gemini-3-flash-preview
-// is the model used in all official audio transcription code examples.)
+// Keep the newest Flash model first so it becomes the app default.
 
 const MODELS: ModelOption[] = [
   {
+    id: 'gemini-3.5-flash',
+    label: 'Gemini 3.5 Flash',
+    badge: 'Latest Default',
+    badgeColor: 'green',
+    audioSupport: 'confirmed',
+  },
+  {
     id: 'gemini-3-flash-preview',
     label: 'Gemini 3 Flash Preview',
-    badge: 'Recommended for Audio',
-    badgeColor: 'green',
+    badge: 'Older Preview',
+    badgeColor: 'slate',
     audioSupport: 'confirmed',
   },
   {
@@ -43,7 +49,7 @@ const MODELS: ModelOption[] = [
   },
 ];
 
-const DEFAULT_MODEL = 'gemini-3-flash-preview';
+const DEFAULT_MODEL = 'gemini-3.5-flash';
 
 const badgeClass = (color: string) => {
   switch (color) {
@@ -246,7 +252,7 @@ const ConfigurationForm: React.FC<ConfigurationFormProps> = ({ file, onStart, on
                 </div>
                 {selectedModel === model.id && model.audioSupport === 'unknown' && (
                   <p className="mt-1.5 ml-6 text-xs text-amber-700">
-                    This model may not support audio transcription. Prefer Gemini 3 Flash Preview.
+                    This model may not support audio transcription. Prefer Gemini 3.5 Flash.
                   </p>
                 )}
               </button>

@@ -6,6 +6,7 @@ import TranscriptionView from './components/TranscriptionView';
 import TranscriptionProgress from './components/TranscriptionProgress';
 import { FileAudioIcon } from './components/Icons';
 import { transcribeChunks, retranscribeChunk, reconcileTranscripts } from './services/geminiService';
+import { applySpeakerMapping, normalizeSpeakerMapping } from './services/transcriptUtils';
 import { splitAudioIntoChunks, decodeAudioFile } from './services/audioService';
 import { AppStatus, TranscriptionConfig, AudioChunk, ChunkProgress } from './types';
 
@@ -14,6 +15,7 @@ const App: React.FC = () => {
   const [file, setFile] = useState<File | null>(null);
   const [config, setConfig] = useState<TranscriptionConfig | null>(null);
   const [transcription, setTranscription] = useState<string>('');
+  const [transcriptionRevision, setTranscriptionRevision] = useState(0);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [prepMsg, setPrepMsg] = useState<string>('');
 
@@ -27,6 +29,7 @@ const App: React.FC = () => {
   const [chunks, setChunks] = useState<AudioChunk[] | null>(null);
   const [chunkProgress, setChunkProgress] = useState<ChunkProgress[]>([]);
   const [retryingChunkIndex, setRetryingChunkIndex] = useState<number | null>(null);
+  const [fixingSpeakersIndex, setFixingSpeakersIndex] = useState<number | null>(null);
 
   // Keep a ref so the transcription callback always reads fresh state
   const chunkProgressRef = useRef<ChunkProgress[]>([]);
@@ -111,6 +114,7 @@ const App: React.FC = () => {
       );
 
       setTranscription(result.text);
+      setTranscriptionRevision(r => r + 1);
       if (result.usageMetadata) {
         setInputTokens(result.usageMetadata.promptTokenCount || 0);
         setOutputTokens(result.usageMetadata.candidatesTokenCount || 0);
@@ -177,6 +181,51 @@ const App: React.FC = () => {
     }
   };
 
+  // ── Fix speaker labels in a single chunk (post-completion) ────────────────
+
+  const handleFixChunkSpeakers = async (index: number, mapping: Record<string, string>) => {
+    if (!chunks || !config || retryingChunkIndex !== null || fixingSpeakersIndex !== null) return;
+
+    const normalized = normalizeSpeakerMapping(mapping);
+    if (!Object.keys(normalized).length) return;
+
+    setFixingSpeakersIndex(index);
+
+    try {
+      const updated = [...chunkProgressRef.current];
+      const arrayIndex = updated.findIndex(p => p.index === index);
+      if (arrayIndex === -1) return;
+
+      const raw = updated[arrayIndex].transcript ?? '';
+      const fixedRaw = applySpeakerMapping(raw, normalized);
+      updated[arrayIndex] = {
+        ...updated[arrayIndex],
+        transcript: fixedRaw,
+      };
+      updateChunkProgress(updated);
+
+      const allRaw = updated.map(p => p.transcript ?? '');
+      const merged = await reconcileTranscripts(
+        allRaw,
+        chunks,
+        config.model,
+        (i, s) => {
+          const prog = [...chunkProgressRef.current];
+          prog[i] = { ...prog[i], status: s };
+          updateChunkProgress(prog);
+        },
+        { skipSpeakerReconciliation: true },
+      );
+
+      setTranscription(merged);
+      setTranscriptionRevision(r => r + 1);
+    } catch (err: any) {
+      console.error('[AudioScribe] Speaker fix failed:', err);
+    } finally {
+      setFixingSpeakersIndex(null);
+    }
+  };
+
   // ── Retry a single chunk (post-completion) ────────────────────────────────
 
   const handleRetryChunk = async (index: number) => {
@@ -223,6 +272,7 @@ const App: React.FC = () => {
       );
 
       setTranscription(merged);
+      setTranscriptionRevision(r => r + 1);
     } catch (err: any) {
       console.error('[AudioScribe] Chunk retry failed:', err);
     } finally {
@@ -244,6 +294,7 @@ const App: React.FC = () => {
     setFile(null);
     setConfig(null);
     setTranscription('');
+    setTranscriptionRevision(0);
     setStatus(AppStatus.IDLE);
     setErrorMsg(null);
     setPrepMsg('');
@@ -252,6 +303,7 @@ const App: React.FC = () => {
     setChunks(null);
     setChunkProgress([]);
     setRetryingChunkIndex(null);
+    setFixingSpeakersIndex(null);
     chunkProgressRef.current = [];
   };
 
@@ -440,6 +492,7 @@ const App: React.FC = () => {
                 </div>
 
                 <TranscriptionView
+                  key={transcriptionRevision}
                   markdown={transcription}
                   fileName={file?.name || 'Audio'}
                   inputTokens={inputTokens}
@@ -452,8 +505,11 @@ const App: React.FC = () => {
                     <TranscriptionProgress
                       progress={chunkProgress}
                       title="Segments"
+                      mergedTranscription={transcription}
                       onRetry={handleRetryChunk}
                       retryingIndex={retryingChunkIndex}
+                      onFixSpeakers={handleFixChunkSpeakers}
+                      fixingSpeakersIndex={fixingSpeakersIndex}
                     />
                   </div>
                 )}

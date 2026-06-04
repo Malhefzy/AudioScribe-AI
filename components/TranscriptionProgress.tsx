@@ -1,12 +1,16 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { ChunkProgress, ChunkStatus } from '../types';
+import SegmentSpeakerEditor from './SegmentSpeakerEditor';
 
 interface TranscriptionProgressProps {
   progress: ChunkProgress[];
   fileName?: string;
   title?: string;
+  mergedTranscription?: string;
   onRetry?: (index: number) => void;
   retryingIndex?: number | null;
+  onFixSpeakers?: (index: number, mapping: Record<string, string>) => void;
+  fixingSpeakersIndex?: number | null;
 }
 
 const statusConfig: Record<ChunkStatus, { label: string; color: string; icon: React.ReactNode }> = {
@@ -113,12 +117,16 @@ const firstTranscriptLine = (text: string): string => {
 };
 
 const TranscriptionProgress: React.FC<TranscriptionProgressProps> = ({
-  progress, fileName, title, onRetry, retryingIndex,
+  progress, fileName, title, mergedTranscription, onRetry, retryingIndex, onFixSpeakers, fixingSpeakersIndex,
 }) => {
+  const [expandedFixIndex, setExpandedFixIndex] = useState<number | null>(null);
   const total = progress.length;
   const done = progress.filter(p => p.status === 'done').length;
   const failed = progress.filter(p => p.status === 'failed');
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+  const allTranscripts = progress.map(p => p.transcript ?? '');
+  const isBusy = retryingIndex !== null && retryingIndex !== undefined
+    || fixingSpeakersIndex !== null && fixingSpeakersIndex !== undefined;
 
   const activeChunk = progress.find(p =>
     p.status === 'transcribing' || p.status === 'reconciling'
@@ -126,6 +134,11 @@ const TranscriptionProgress: React.FC<TranscriptionProgressProps> = ({
   const uploadingChunk = progress.find(p =>
     p.status === 'uploading' || p.status === 'processing'
   );
+
+  const handleFixApply = (index: number, mapping: Record<string, string>) => {
+    onFixSpeakers?.(index, mapping);
+    setExpandedFixIndex(null);
+  };
 
   return (
     <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden animate-in fade-in duration-300">
@@ -174,6 +187,12 @@ const TranscriptionProgress: React.FC<TranscriptionProgressProps> = ({
             )}
           </div>
         )}
+
+        {onFixSpeakers && done > 0 && (
+          <p className="mt-3 text-xs text-slate-500">
+            Speaker labels look wrong in one segment? Use <span className="font-medium text-slate-700">Fix speakers</span> to remap them without re-transcribing.
+          </p>
+        )}
       </div>
 
       {/* Chunk table */}
@@ -182,65 +201,100 @@ const TranscriptionProgress: React.FC<TranscriptionProgressProps> = ({
           const cfg = statusConfig[chunk.status];
           const isActive = chunk.status === 'transcribing' || chunk.status === 'reconciling';
           const isPreloading = chunk.status === 'uploading' || chunk.status === 'processing';
+          const isEditingSpeakers = expandedFixIndex === chunk.index;
+          const showSegmentActions = onRetry && chunk.status === 'done';
 
           return (
-            <div
-              key={chunk.index}
-              className={`flex items-center gap-4 px-6 py-3 transition-colors ${
-                isActive ? 'bg-indigo-50/60' :
-                isPreloading ? 'bg-blue-50/40' :
-                chunk.status === 'failed' ? 'bg-red-50/60' :
-                chunk.status === 'done' ? '' : ''
-              }`}
-            >
-              {/* Status icon */}
-              <div className="flex-shrink-0">{cfg.icon}</div>
+            <div key={chunk.index}>
+              <div
+                className={`flex items-center gap-4 px-6 py-3 transition-colors ${
+                  isActive ? 'bg-indigo-50/60' :
+                  isPreloading ? 'bg-blue-50/40' :
+                  chunk.status === 'failed' ? 'bg-red-50/60' :
+                  isEditingSpeakers ? 'bg-violet-50/40' :
+                  chunk.status === 'done' ? '' : ''
+                }`}
+              >
+                {/* Status icon */}
+                <div className="flex-shrink-0">{cfg.icon}</div>
 
-              {/* Segment info */}
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium text-slate-700">
-                    Segment {chunk.index + 1}
-                  </span>
-                  {isPreloading && (
-                    <span className="text-xs text-blue-500 font-medium">↑ pre-loading</span>
+                {/* Segment info */}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-slate-700">
+                      Segment {chunk.index + 1}
+                    </span>
+                    {isPreloading && (
+                      <span className="text-xs text-blue-500 font-medium">↑ pre-loading</span>
+                    )}
+                  </div>
+                  <div className="text-xs text-slate-400 font-mono mt-0.5">
+                    {formatTime(chunk.startTime)} – {formatTime(chunk.endTime)}
+                    <span className="ml-2 text-slate-300">·</span>
+                    <span className="ml-2">{formatDuration(chunk.endTime - chunk.startTime)}</span>
+                  </div>
+                  {showSegmentActions && chunk.transcript && (
+                    <p className="text-xs text-slate-400 mt-0.5 truncate max-w-sm">
+                      {firstTranscriptLine(chunk.transcript)}
+                    </p>
+                  )}
+                  {chunk.status === 'failed' && chunk.error && (
+                    <p className="text-xs text-red-500 mt-1 truncate">{chunk.error}</p>
                   )}
                 </div>
-                <div className="text-xs text-slate-400 font-mono mt-0.5">
-                  {formatTime(chunk.startTime)} – {formatTime(chunk.endTime)}
-                  <span className="ml-2 text-slate-300">·</span>
-                  <span className="ml-2">{formatDuration(chunk.endTime - chunk.startTime)}</span>
+
+                {/* Status label / actions */}
+                <div className="flex-shrink-0 flex items-center gap-3">
+                  {showSegmentActions ? (
+                    <>
+                      {onFixSpeakers && (
+                        <button
+                          onClick={() => setExpandedFixIndex(isEditingSpeakers ? null : chunk.index)}
+                          disabled={isBusy}
+                          title="Remap speaker labels in this segment"
+                          className={`flex items-center gap-1 text-xs font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                            isEditingSpeakers ? 'text-violet-700' : 'text-slate-400 hover:text-violet-600'
+                          }`}
+                        >
+                          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
+                          </svg>
+                          Fix speakers
+                        </button>
+                      )}
+                      <button
+                        onClick={() => onRetry(chunk.index)}
+                        disabled={isBusy}
+                        title="Re-run this segment"
+                        className="flex items-center gap-1 text-xs font-medium text-slate-400 hover:text-indigo-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                      >
+                        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                        </svg>
+                        Re-run
+                      </button>
+                    </>
+                  ) : (
+                    <div className={`text-xs font-medium ${cfg.color}`}>
+                      {cfg.label}
+                    </div>
+                  )}
                 </div>
-                {chunk.status === 'done' && chunk.transcript && onRetry && (
-                  <p className="text-xs text-slate-400 mt-0.5 truncate max-w-sm">
-                    {firstTranscriptLine(chunk.transcript)}
-                  </p>
-                )}
-                {chunk.status === 'failed' && chunk.error && (
-                  <p className="text-xs text-red-500 mt-1 truncate">{chunk.error}</p>
-                )}
               </div>
 
-              {/* Status label / retry button */}
-              <div className="flex-shrink-0">
-                {onRetry && chunk.status === 'done' ? (
-                  <button
-                    onClick={() => onRetry(chunk.index)}
-                    disabled={retryingIndex !== null}
-                    title="Re-run this segment"
-                    className="flex items-center gap-1 text-xs font-medium text-slate-400 hover:text-indigo-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                  >
-                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                    </svg>
-                    Re-run
-                  </button>
-                ) : (
-                  <div className={`text-xs font-medium ${cfg.color}`}>
-                    {cfg.label}
-                  </div>
-                )}
-              </div>
+              {isEditingSpeakers && chunk.transcript && onFixSpeakers && (
+                <SegmentSpeakerEditor
+                  chunkIndex={chunk.index}
+                  startTime={chunk.startTime}
+                  endTime={chunk.endTime}
+                  transcript={chunk.transcript}
+                  allTranscripts={allTranscripts}
+                  mergedTranscription={mergedTranscription}
+                  onApply={handleFixApply}
+                  onCancel={() => setExpandedFixIndex(null)}
+                  isApplying={fixingSpeakersIndex === chunk.index}
+                />
+              )}
             </div>
           );
         })}

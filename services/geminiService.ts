@@ -1,12 +1,13 @@
 import { GoogleGenAI } from "@google/genai";
 import { AudioChunk, ChunkProgress, ChunkStatus } from "../types";
+import { applySpeakerMapping, buildSpeakerRoster, offsetTimestamps } from "./transcriptUtils";
 
 const getAiClient = () => {
   const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
   return new GoogleGenAI({ apiKey });
 };
 
-export const DEFAULT_MODEL = 'gemini-3-flash-preview';
+export const DEFAULT_MODEL = 'gemini-3.5-flash';
 const MAX_OUTPUT_TOKENS_PER_CALL = 65536;
 
 const SYSTEM_INSTRUCTION =
@@ -50,48 +51,11 @@ const withRetry = async <T>(
 // Text helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-const offsetTimestamps = (text: string, offsetSeconds: number): string => {
-  if (offsetSeconds === 0) return text;
-  return text.replace(/\[(\d{1,2}):(\d{2})(?::(\d{2}))?\]/g, (_, a, b, c) => {
-    const total = (c !== undefined
-      ? parseInt(a) * 3600 + parseInt(b) * 60 + parseInt(c)
-      : parseInt(a) * 60 + parseInt(b)) + offsetSeconds;
-    const h = Math.floor(total / 3600);
-    const m = Math.floor((total % 3600) / 60);
-    const ss = Math.floor(total % 60);
-    if (h > 0 || offsetSeconds >= 3600)
-      return `[${h}:${String(m).padStart(2, '0')}:${String(ss).padStart(2, '0')}]`;
-    return `[${m}:${String(ss).padStart(2, '0')}]`;
-  });
-};
-
 const lastFormattedLines = (text: string, n = 15): string =>
   text.split('\n').filter(l => /\[\d{1,2}:\d{2}(?::\d{2})?\]/.test(l)).slice(-n).join('\n');
 
 const firstFormattedLines = (text: string, n = 15): string =>
   text.split('\n').filter(l => /\[\d{1,2}:\d{2}(?::\d{2})?\]/.test(l)).slice(0, n).join('\n');
-
-const buildSpeakerRoster = (transcripts: string[]): string[] => {
-  const nums = new Set<number>();
-  for (const text of transcripts)
-    for (const m of text.matchAll(/\*\*Speaker (\d+)\*\*/g))
-      nums.add(parseInt(m[1], 10));
-  return [...nums].sort((a, b) => a - b).map(n => `Speaker ${n}`);
-};
-
-/** Atomically remaps speaker labels using temp placeholders to avoid swap collisions. */
-const applySpeakerMapping = (text: string, mapping: Record<string, string>): string => {
-  const entries = Object.entries(mapping);
-  if (!entries.length) return text;
-  let result = text;
-  entries.forEach(([from], i) => {
-    result = result.replace(new RegExp(from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), `__SPKR_${i}__`);
-  });
-  entries.forEach(([, to], i) => {
-    result = result.replace(new RegExp(`__SPKR_${i}__`, 'g'), to);
-  });
-  return result;
-};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // File API helpers
@@ -251,12 +215,17 @@ export const reconcileTranscripts = async (
   chunks: AudioChunk[],
   modelName: string,
   onChunkStatus: (index: number, status: ChunkStatus) => void,
+  options?: { skipSpeakerReconciliation?: boolean },
 ): Promise<string> => {
   if (rawTranscripts.length === 1) {
     return offsetTimestamps(rawTranscripts[0], chunks[0].startTime);
   }
 
   const absolute = rawTranscripts.map((t, i) => offsetTimestamps(t, chunks[i].startTime));
+
+  if (options?.skipSpeakerReconciliation) {
+    return absolute.join('\n\n');
+  }
 
   for (let i = 1; i < chunks.length; i++) onChunkStatus(i, 'reconciling');
 

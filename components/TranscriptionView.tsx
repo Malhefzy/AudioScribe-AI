@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { CopyIcon, CheckIcon, SparklesIcon, UsersIcon, DownloadIcon } from './Icons';
 
@@ -18,6 +18,11 @@ const TranscriptionView: React.FC<TranscriptionViewProps> = ({
   const [copied, setCopied] = useState(false);
   const [speakerMap, setSpeakerMap] = useState<Record<string, string>>({});
   const [isConfiguring, setIsConfiguring] = useState(true);
+
+  // Reset display-only renames when the underlying transcript changes (e.g. segment speaker fix).
+  useEffect(() => {
+    setSpeakerMap({});
+  }, [initialMarkdown]);
   
   // Extract unique speakers from the initial markdown
   // Matches: **Speaker 1** OR Speaker 1:
@@ -211,7 +216,7 @@ const TranscriptionView: React.FC<TranscriptionViewProps> = ({
         
         <div className="p-6 overflow-y-auto prose-content flex-grow" dir={isRTL ? 'rtl' : 'ltr'}>
           <div className={`prose prose-slate max-w-none prose-headings:font-semibold prose-headings:text-slate-800 prose-p:text-slate-600 prose-strong:text-slate-800 ${isRTL ? 'text-right' : 'text-left'}`}>
-             <ReactMarkdown>
+             <ReactMarkdown key={exportMarkdown}>
                {exportMarkdown}
              </ReactMarkdown>
           </div>
