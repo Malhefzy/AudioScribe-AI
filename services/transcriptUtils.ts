@@ -105,6 +105,21 @@ export const applySpeakerMapping = (text: string, mapping: Record<string, string
   return result;
 };
 
+/**
+ * Compose two mappings so that applying the result once equals applying
+ * `first` then `second`. Used to layer a new manual fix on top of a segment's
+ * existing mapping.
+ */
+export const composeSpeakerMappings = (
+  first: Record<string, string>,
+  second: Record<string, string>,
+): Record<string, string> => {
+  const out: Record<string, string> = {};
+  for (const [from, to] of Object.entries(first)) out[from] = second[to] ?? to;
+  for (const [from, to] of Object.entries(second)) if (!(from in out)) out[from] = to;
+  return normalizeSpeakerMapping(out);
+};
+
 /** Keep only remappings where the label actually changes. */
 export const normalizeSpeakerMapping = (mapping: Record<string, string>): Record<string, string> =>
   Object.fromEntries(Object.entries(mapping).filter(([from, to]) => from !== to));

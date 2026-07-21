@@ -4,11 +4,13 @@ import ConfigurationForm from './components/ConfigurationForm';
 import AudioEditor from './components/AudioEditor';
 import TranscriptionView from './components/TranscriptionView';
 import TranscriptionProgress from './components/TranscriptionProgress';
+import SavedRunsSidebar from './components/SavedRunsSidebar';
 import { FileAudioIcon } from './components/Icons';
 import { transcribeChunks, retranscribeChunk, reconcileTranscripts } from './services/geminiService';
-import { applySpeakerMapping, normalizeSpeakerMapping } from './services/transcriptUtils';
+import { composeSpeakerMappings, normalizeSpeakerMapping } from './services/transcriptUtils';
 import { splitAudioIntoChunks, decodeAudioFile } from './services/audioService';
-import { AppStatus, TranscriptionConfig, AudioChunk, ChunkProgress } from './types';
+import { createSavedRun, loadSavedRuns, persistSavedRuns } from './services/savedRunsService';
+import { AppStatus, TranscriptionConfig, AudioChunk, ChunkProgress, SavedTranscriptionRun } from './types';
 
 const App: React.FC = () => {
   const [status, setStatus] = useState<AppStatus>(AppStatus.IDLE);
@@ -16,8 +18,14 @@ const App: React.FC = () => {
   const [config, setConfig] = useState<TranscriptionConfig | null>(null);
   const [transcription, setTranscription] = useState<string>('');
   const [transcriptionRevision, setTranscriptionRevision] = useState(0);
+  // Top-level speaker names (e.g. "Speaker 1" → "Alice"). Applied to the whole
+  // markdown at render time; lives here so it survives segment fixes/re-merges.
+  const [globalSpeakerMap, setGlobalSpeakerMap] = useState<Record<string, string>>({});
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [prepMsg, setPrepMsg] = useState<string>('');
+  const [savedRuns, setSavedRuns] = useState<SavedTranscriptionRun[]>(() => loadSavedRuns());
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [runMode, setRunMode] = useState<'live' | 'saved'>('live');
 
   const [inputTokens, setInputTokens] = useState<number>(0);
   const [outputTokens, setOutputTokens] = useState<number>(0);
@@ -36,6 +44,59 @@ const App: React.FC = () => {
   const updateChunkProgress = (updated: ChunkProgress[]) => {
     chunkProgressRef.current = updated;
     setChunkProgress(updated);
+  };
+
+  const sortSavedRuns = (runs: SavedTranscriptionRun[]) =>
+    [...runs].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+
+  const commitSavedRuns = (runs: SavedTranscriptionRun[]) => {
+    const sorted = sortSavedRuns(runs);
+    setSavedRuns(sorted);
+    persistSavedRuns(sorted);
+  };
+
+  const saveMarkdownRun = (
+    markdown: string,
+    options?: {
+      fileName?: string;
+      inputTokens?: number;
+      outputTokens?: number;
+      runId?: string | null;
+    },
+  ) => {
+    if (!markdown.trim()) return null;
+
+    const runId = options?.runId ?? activeRunId;
+    const now = new Date().toISOString();
+    let savedRunId = runId;
+    const existingRun = runId ? savedRuns.find(run => run.id === runId) : undefined;
+
+    if (existingRun) {
+      commitSavedRuns(savedRuns.map(run =>
+        run.id === existingRun.id
+          ? {
+              ...run,
+              markdown,
+              updatedAt: now,
+              inputTokens: options?.inputTokens ?? run.inputTokens,
+              outputTokens: options?.outputTokens ?? run.outputTokens,
+              storesAudio: false,
+            }
+          : run
+      ));
+    } else {
+      const newRun = createSavedRun({
+        fileName: options?.fileName || file?.name || 'Untitled transcript',
+        markdown,
+        inputTokens: options?.inputTokens,
+        outputTokens: options?.outputTokens,
+      });
+      savedRunId = newRun.id;
+      commitSavedRuns([newRun, ...savedRuns]);
+    }
+
+    setActiveRunId(savedRunId);
+    return savedRunId;
   };
 
   // ── API key check ──────────────────────────────────────────────────────────
@@ -72,6 +133,9 @@ const App: React.FC = () => {
 
   const handleFileSelect = (selectedFile: File) => {
     setFile(selectedFile);
+    setActiveRunId(null);
+    setRunMode('live');
+    setGlobalSpeakerMap({});
     setErrorMsg(null);
     setInputTokens(0);
     setOutputTokens(0);
@@ -115,10 +179,18 @@ const App: React.FC = () => {
 
       setTranscription(result.text);
       setTranscriptionRevision(r => r + 1);
+      const nextInputTokens = result.usageMetadata?.promptTokenCount || inputTokens;
+      const nextOutputTokens = result.usageMetadata?.candidatesTokenCount || outputTokens;
       if (result.usageMetadata) {
         setInputTokens(result.usageMetadata.promptTokenCount || 0);
         setOutputTokens(result.usageMetadata.candidatesTokenCount || 0);
       }
+      saveMarkdownRun(result.text, {
+        fileName: file?.name,
+        inputTokens: nextInputTokens,
+        outputTokens: nextOutputTokens,
+      });
+      setRunMode('live');
       setStatus(AppStatus.COMPLETED);
     } catch (err: any) {
       console.error(err);
@@ -196,11 +268,11 @@ const App: React.FC = () => {
       const arrayIndex = updated.findIndex(p => p.index === index);
       if (arrayIndex === -1) return;
 
-      const raw = updated[arrayIndex].transcript ?? '';
-      const fixedRaw = applySpeakerMapping(raw, normalized);
+      // Layer the fix onto this segment's own mapping — raw transcript stays
+      // untouched, so the change can never leak into other segments.
       updated[arrayIndex] = {
         ...updated[arrayIndex],
-        transcript: fixedRaw,
+        speakerMapping: composeSpeakerMappings(updated[arrayIndex].speakerMapping ?? {}, normalized),
       };
       updateChunkProgress(updated);
 
@@ -214,11 +286,19 @@ const App: React.FC = () => {
           prog[i] = { ...prog[i], status: s };
           updateChunkProgress(prog);
         },
-        { skipSpeakerReconciliation: true },
+        {
+          skipSpeakerReconciliation: true,
+          segmentMappings: updated.map(p => p.speakerMapping),
+        },
       );
 
       setTranscription(merged);
       setTranscriptionRevision(r => r + 1);
+      saveMarkdownRun(merged, {
+        fileName: file?.name,
+        inputTokens,
+        outputTokens,
+      });
     } catch (err: any) {
       console.error('[AudioScribe] Speaker fix failed:', err);
     } finally {
@@ -253,9 +333,15 @@ const App: React.FC = () => {
         },
       );
 
-      // Persist new raw transcript
+      // Persist new raw transcript (fresh transcription → drop the old mapping)
       const updated = [...chunkProgressRef.current];
-      updated[index] = { ...updated[index], status: 'done', transcript: rawText, error: undefined };
+      updated[index] = {
+        ...updated[index],
+        status: 'done',
+        transcript: rawText,
+        error: undefined,
+        speakerMapping: undefined,
+      };
       updateChunkProgress(updated);
 
       // Re-run full reconciliation with updated raw transcripts
@@ -269,10 +355,23 @@ const App: React.FC = () => {
           prog[i] = { ...prog[i], status: s };
           updateChunkProgress(prog);
         },
+        {
+          segmentMappings: updated.map(p => p.speakerMapping),
+          onSegmentMapping: (i, m) => {
+            const prog = [...chunkProgressRef.current];
+            prog[i] = { ...prog[i], speakerMapping: m };
+            updateChunkProgress(prog);
+          },
+        },
       );
 
       setTranscription(merged);
       setTranscriptionRevision(r => r + 1);
+      saveMarkdownRun(merged, {
+        fileName: file?.name,
+        inputTokens,
+        outputTokens,
+      });
     } catch (err: any) {
       console.error('[AudioScribe] Chunk retry failed:', err);
     } finally {
@@ -295,6 +394,9 @@ const App: React.FC = () => {
     setConfig(null);
     setTranscription('');
     setTranscriptionRevision(0);
+    setGlobalSpeakerMap({});
+    setActiveRunId(null);
+    setRunMode('live');
     setStatus(AppStatus.IDLE);
     setErrorMsg(null);
     setPrepMsg('');
@@ -307,6 +409,56 @@ const App: React.FC = () => {
     chunkProgressRef.current = [];
   };
 
+  const handleSelectSavedRun = (run: SavedTranscriptionRun) => {
+    setFile(null);
+    setConfig(null);
+    setTranscription(run.markdown);
+    setTranscriptionRevision(r => r + 1);
+    setGlobalSpeakerMap({});
+    setActiveRunId(run.id);
+    setRunMode('saved');
+    setStatus(AppStatus.COMPLETED);
+    setErrorMsg(null);
+    setPrepMsg('');
+    setInputTokens(run.inputTokens || 0);
+    setOutputTokens(run.outputTokens || 0);
+    setChunks(null);
+    setChunkProgress([]);
+    setRetryingChunkIndex(null);
+    setFixingSpeakersIndex(null);
+    chunkProgressRef.current = [];
+  };
+
+  const handleRenameSavedRun = (id: string, title: string) => {
+    const cleanTitle = title.trim();
+    if (!cleanTitle) return;
+
+    commitSavedRuns(savedRuns.map(run =>
+      run.id === id
+        ? { ...run, title: cleanTitle, updatedAt: new Date().toISOString() }
+        : run
+    ));
+  };
+
+  const handleDeleteSavedRun = (id: string) => {
+    commitSavedRuns(savedRuns.filter(run => run.id !== id));
+
+    if (id === activeRunId) {
+      handleReset();
+    }
+  };
+
+  const handleSaveMarkdownChanges = (markdown: string) => {
+    setTranscription(markdown);
+    setTranscriptionRevision(r => r + 1);
+    saveMarkdownRun(markdown, {
+      fileName: file?.name || savedRuns.find(run => run.id === activeRunId)?.fileName,
+      inputTokens,
+      outputTokens,
+      runId: activeRunId,
+    });
+  };
+
   // ── Derived ────────────────────────────────────────────────────────────────
 
   const isPreparing = status === AppStatus.UPLOADING || status === AppStatus.PROCESSING;
@@ -314,6 +466,8 @@ const App: React.FC = () => {
   const completedCount = chunkProgress.filter(p => p.status === 'done').length;
   const failedChunk = chunkProgress.find(p => p.status === 'failed');
   const resumableCount = chunkProgress.filter(p => p.status === 'done' && p.transcript).length;
+  const activeSavedRun = activeRunId ? savedRuns.find(run => run.id === activeRunId) : undefined;
+  const currentDisplayName = file?.name || activeSavedRun?.fileName || 'Saved transcript';
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans selection:bg-blue-100 selection:text-blue-900">
@@ -335,7 +489,16 @@ const App: React.FC = () => {
         </div>
       </header>
 
-      <main className="max-w-4xl mx-auto px-6 py-12">
+      <div className="lg:grid lg:grid-cols-[20rem_minmax(0,1fr)]">
+        <SavedRunsSidebar
+          runs={savedRuns}
+          activeRunId={activeRunId}
+          onSelectRun={handleSelectSavedRun}
+          onRenameRun={handleRenameSavedRun}
+          onDeleteRun={handleDeleteSavedRun}
+        />
+
+      <main className="max-w-4xl w-full mx-auto px-6 py-12">
 
         {/* API Key */}
         {!isCheckingKey && !hasApiKey && (
@@ -476,10 +639,12 @@ const App: React.FC = () => {
                       <FileAudioIcon className="w-5 h-5" />
                     </div>
                     <div>
-                      <h3 className="text-slate-900 font-medium">{file?.name}</h3>
+                      <h3 className="text-slate-900 font-medium">{currentDisplayName}</h3>
                       <p className="text-slate-500 text-xs">
-                        Transcribed successfully
-                        {completedCount > 1 ? ` · ${completedCount} segments merged` : ''}
+                        {runMode === 'saved'
+                          ? 'Saved markdown run · audio chunks were not stored'
+                          : 'Transcribed successfully · saved to browser history'}
+                        {runMode === 'live' && completedCount > 1 ? ` · ${completedCount} segments merged` : ''}
                       </p>
                     </div>
                   </div>
@@ -494,9 +659,12 @@ const App: React.FC = () => {
                 <TranscriptionView
                   key={transcriptionRevision}
                   markdown={transcription}
-                  fileName={file?.name || 'Audio'}
+                  fileName={currentDisplayName}
                   inputTokens={inputTokens}
                   outputTokens={outputTokens}
+                  onSaveMarkdown={handleSaveMarkdownChanges}
+                  speakerMap={globalSpeakerMap}
+                  onSpeakerMapChange={setGlobalSpeakerMap}
                 />
 
                 {/* Per-segment retry panel (only when multi-chunk) */}
@@ -519,6 +687,7 @@ const App: React.FC = () => {
           </div>
         )}
       </main>
+      </div>
     </div>
   );
 };

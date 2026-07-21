@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { ChunkProgress, ChunkStatus } from '../types';
+import { applySpeakerMapping } from '../services/transcriptUtils';
 import SegmentSpeakerEditor from './SegmentSpeakerEditor';
 
 interface TranscriptionProgressProps {
@@ -124,7 +125,11 @@ const TranscriptionProgress: React.FC<TranscriptionProgressProps> = ({
   const done = progress.filter(p => p.status === 'done').length;
   const failed = progress.filter(p => p.status === 'failed');
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-  const allTranscripts = progress.map(p => p.transcript ?? '');
+  // Effective transcripts: raw text with each segment's own mapping applied.
+  // The editor works on these, so a new fix layers on top of prior fixes.
+  const effectiveTranscript = (p: ChunkProgress) =>
+    p.transcript ? applySpeakerMapping(p.transcript, p.speakerMapping ?? {}) : undefined;
+  const allTranscripts = progress.map(p => effectiveTranscript(p) ?? '');
   const isBusy = retryingIndex !== null && retryingIndex !== undefined
     || fixingSpeakersIndex !== null && fixingSpeakersIndex !== undefined;
 
@@ -203,6 +208,7 @@ const TranscriptionProgress: React.FC<TranscriptionProgressProps> = ({
           const isPreloading = chunk.status === 'uploading' || chunk.status === 'processing';
           const isEditingSpeakers = expandedFixIndex === chunk.index;
           const showSegmentActions = onRetry && chunk.status === 'done';
+          const displayTranscript = effectiveTranscript(chunk);
 
           return (
             <div key={chunk.index}>
@@ -233,9 +239,9 @@ const TranscriptionProgress: React.FC<TranscriptionProgressProps> = ({
                     <span className="ml-2 text-slate-300">·</span>
                     <span className="ml-2">{formatDuration(chunk.endTime - chunk.startTime)}</span>
                   </div>
-                  {showSegmentActions && chunk.transcript && (
+                  {showSegmentActions && displayTranscript && (
                     <p className="text-xs text-slate-400 mt-0.5 truncate max-w-sm">
-                      {firstTranscriptLine(chunk.transcript)}
+                      {firstTranscriptLine(displayTranscript)}
                     </p>
                   )}
                   {chunk.status === 'failed' && chunk.error && (
@@ -282,12 +288,12 @@ const TranscriptionProgress: React.FC<TranscriptionProgressProps> = ({
                 </div>
               </div>
 
-              {isEditingSpeakers && chunk.transcript && onFixSpeakers && (
+              {isEditingSpeakers && displayTranscript && onFixSpeakers && (
                 <SegmentSpeakerEditor
                   chunkIndex={chunk.index}
                   startTime={chunk.startTime}
                   endTime={chunk.endTime}
-                  transcript={chunk.transcript}
+                  transcript={displayTranscript}
                   allTranscripts={allTranscripts}
                   mergedTranscription={mergedTranscription}
                   onApply={handleFixApply}

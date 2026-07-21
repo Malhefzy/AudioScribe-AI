@@ -31,6 +31,19 @@ export interface TranscriptionConfig {
   estimatedOutputTokens?: number;
 }
 
+export interface SavedTranscriptionRun {
+  id: string;
+  title: string;
+  fileName: string;
+  markdown: string;
+  createdAt: string;
+  updatedAt: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  /** Saved runs only persist final markdown and metadata. Audio chunks are session-only. */
+  storesAudio: false;
+}
+
 export interface ModelOption {
   id: string;
   label: string;
@@ -65,6 +78,13 @@ export interface ChunkProgress {
   error?: string;
   /** Raw transcript (relative timestamps). Set when status === 'done'. Used for resume. */
   transcript?: string;
+  /**
+   * This segment's own speaker-label remapping (e.g. {"Speaker 1": "Speaker 2"}).
+   * Applied on top of the raw transcript at merge time — the raw text is never
+   * rewritten, so edits stay scoped to this segment. Holds both automatic
+   * boundary-reconciliation results and manual "Fix speakers" edits.
+   */
+  speakerMapping?: Record<string, string>;
 }
 
 declare global {

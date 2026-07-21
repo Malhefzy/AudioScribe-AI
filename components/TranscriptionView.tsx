@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { CopyIcon, CheckIcon, SparklesIcon, UsersIcon, DownloadIcon } from './Icons';
 
@@ -7,23 +7,25 @@ interface TranscriptionViewProps {
   fileName: string;
   inputTokens?: number;
   outputTokens?: number;
+  onSaveMarkdown?: (markdown: string) => void;
+  /** Global speaker names ("Speaker 1" → "Alice"), owned by App so they
+   *  persist across segment fixes and re-merges. */
+  speakerMap: Record<string, string>;
+  onSpeakerMapChange: (map: Record<string, string>) => void;
 }
 
-const TranscriptionView: React.FC<TranscriptionViewProps> = ({ 
-  markdown: initialMarkdown, 
-  fileName, 
+const TranscriptionView: React.FC<TranscriptionViewProps> = ({
+  markdown: initialMarkdown,
+  fileName,
   inputTokens,
-  outputTokens 
+  outputTokens,
+  onSaveMarkdown,
+  speakerMap,
+  onSpeakerMapChange,
 }) => {
   const [copied, setCopied] = useState(false);
-  const [speakerMap, setSpeakerMap] = useState<Record<string, string>>({});
   const [isConfiguring, setIsConfiguring] = useState(true);
 
-  // Reset display-only renames when the underlying transcript changes (e.g. segment speaker fix).
-  useEffect(() => {
-    setSpeakerMap({});
-  }, [initialMarkdown]);
-  
   // Extract unique speakers from the initial markdown
   // Matches: **Speaker 1** OR Speaker 1:
   const speakers = useMemo(() => {
@@ -104,8 +106,10 @@ const TranscriptionView: React.FC<TranscriptionViewProps> = ({
   };
 
   const updateSpeakerName = (original: string, newName: string) => {
-    setSpeakerMap(prev => ({ ...prev, [original]: newName }));
+    onSpeakerMapChange({ ...speakerMap, [original]: newName });
   };
+
+  const hasUnsavedMarkdownChanges = exportMarkdown !== initialMarkdown;
 
   return (
     <div className="flex flex-col gap-4 relative">
@@ -136,7 +140,7 @@ const TranscriptionView: React.FC<TranscriptionViewProps> = ({
           {isConfiguring && (
              <div className="p-6 bg-white border-t border-slate-100 rounded-b-xl animate-in slide-in-from-top-2">
                 <p className="text-sm text-slate-500 mb-4">
-                  Rename speakers below to update the transcript automatically.
+                  Rename speakers below — names apply across the entire transcript, and persist through per-segment fixes.
                 </p>
                 {/* Responsive Grid for speakers */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -191,6 +195,16 @@ const TranscriptionView: React.FC<TranscriptionViewProps> = ({
           </div>
 
           <div className="flex items-center gap-2 self-end sm:self-auto">
+            {onSaveMarkdown && hasUnsavedMarkdownChanges && (
+              <button
+                onClick={() => onSaveMarkdown(exportMarkdown)}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium bg-blue-600 text-white border border-blue-600 hover:bg-blue-700 transition-all shadow-sm"
+                title="Save speaker rename changes to this run"
+              >
+                <CheckIcon className="w-4 h-4" />
+                <span className="hidden sm:inline">Save Changes</span>
+              </button>
+            )}
             <button
               onClick={handleDownload}
               className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium bg-white text-slate-600 border border-slate-200 hover:bg-slate-50 hover:text-slate-900 transition-all shadow-sm"

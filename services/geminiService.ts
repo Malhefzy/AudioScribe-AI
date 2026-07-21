@@ -1,6 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
 import { AudioChunk, ChunkProgress, ChunkStatus } from "../types";
-import { applySpeakerMapping, buildSpeakerRoster, offsetTimestamps } from "./transcriptUtils";
+import { applySpeakerMapping, buildSpeakerRoster, composeSpeakerMappings, offsetTimestamps } from "./transcriptUtils";
 
 const getAiClient = () => {
   const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
@@ -162,7 +162,7 @@ const reconcileChunkSpeakers = async (
   modelName: string,
   prevTail: string,
   nextText: string,
-): Promise<string> => {
+): Promise<{ text: string; mapping: Record<string, string> }> => {
   const ai = getAiClient();
   const nextHead = firstFormattedLines(nextText, 20);
   const prompt = `
@@ -188,14 +188,14 @@ Output ONLY the raw JSON on one line. No explanation.
     });
     const raw = (resp.text ?? '{}').trim();
     const match = raw.match(/\{[^}]*\}/);
-    if (!match) return nextText;
+    if (!match) return { text: nextText, mapping: {} };
     const mapping: Record<string, string> = JSON.parse(match[0]);
-    if (!Object.keys(mapping).length) return nextText;
+    if (!Object.keys(mapping).length) return { text: nextText, mapping: {} };
     console.log('[AudioScribe] Reconciliation mapping:', mapping);
-    return applySpeakerMapping(nextText, mapping);
+    return { text: applySpeakerMapping(nextText, mapping), mapping };
   } catch (e) {
     console.warn('[AudioScribe] Reconciliation skipped:', e);
-    return nextText;
+    return { text: nextText, mapping: {} };
   }
 };
 
@@ -204,8 +204,14 @@ Output ONLY the raw JSON on one line. No explanation.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Applies timestamp offsets + runs the speaker-reconciliation pass across all
- * raw (relative-timestamp) chunk transcripts. Returns the merged string.
+ * Applies timestamp offsets, each segment's own speaker mapping, and (unless
+ * skipped) the boundary speaker-reconciliation pass. Returns the merged string.
+ *
+ * Raw transcripts are never rewritten — per-segment corrections live in
+ * `options.segmentMappings` so they stay scoped to their segment. Mappings the
+ * reconciliation pass discovers are reported via `options.onSegmentMapping`
+ * (already composed with the segment's existing mapping) so the caller can
+ * persist them and later re-merges reproduce the same labels.
  *
  * `onChunkStatus` is called with ('reconciling' | 'done') for each chunk so
  * the caller can update UI progress state.
@@ -215,13 +221,23 @@ export const reconcileTranscripts = async (
   chunks: AudioChunk[],
   modelName: string,
   onChunkStatus: (index: number, status: ChunkStatus) => void,
-  options?: { skipSpeakerReconciliation?: boolean },
+  options?: {
+    skipSpeakerReconciliation?: boolean;
+    segmentMappings?: Array<Record<string, string> | undefined>;
+    onSegmentMapping?: (index: number, mapping: Record<string, string>) => void;
+  },
 ): Promise<string> => {
+  const mappings = options?.segmentMappings ?? [];
+  const withMapping = (text: string, i: number) => {
+    const m = mappings[i];
+    return m && Object.keys(m).length ? applySpeakerMapping(text, m) : text;
+  };
+
   if (rawTranscripts.length === 1) {
-    return offsetTimestamps(rawTranscripts[0], chunks[0].startTime);
+    return withMapping(offsetTimestamps(rawTranscripts[0], chunks[0].startTime), 0);
   }
 
-  const absolute = rawTranscripts.map((t, i) => offsetTimestamps(t, chunks[i].startTime));
+  const absolute = rawTranscripts.map((t, i) => withMapping(offsetTimestamps(t, chunks[i].startTime), i));
 
   if (options?.skipSpeakerReconciliation) {
     return absolute.join('\n\n');
@@ -232,7 +248,10 @@ export const reconcileTranscripts = async (
   const reconciled: string[] = [absolute[0]];
   for (let i = 1; i < absolute.length; i++) {
     const prevTail = lastFormattedLines(reconciled[i - 1], 15);
-    const corrected = await reconcileChunkSpeakers(modelName, prevTail, absolute[i]);
+    const { text: corrected, mapping } = await reconcileChunkSpeakers(modelName, prevTail, absolute[i]);
+    if (Object.keys(mapping).length) {
+      options?.onSegmentMapping?.(i, composeSpeakerMappings(mappings[i] ?? {}, mapping));
+    }
     reconciled.push(corrected);
     onChunkStatus(i, 'done');
   }
@@ -430,6 +449,10 @@ export const transcribeChunks = async (
       chunks,
       modelName,
       (i, s) => push(i, { status: s }),
+      {
+        segmentMappings: progress.map(p => p.speakerMapping),
+        onSegmentMapping: (i, m) => push(i, { speakerMapping: m }),
+      },
     ),
     usageMetadata: {},
   };
