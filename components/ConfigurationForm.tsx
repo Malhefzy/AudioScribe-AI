@@ -13,10 +13,17 @@ interface ConfigurationFormProps {
 
 const MODELS: ModelOption[] = [
   {
-    id: 'gemini-3.5-flash',
-    label: 'Gemini 3.5 Flash',
+    id: 'gemini-3.6-flash',
+    label: 'Gemini 3.6 Flash',
     badge: 'Latest Default',
     badgeColor: 'green',
+    audioSupport: 'confirmed',
+  },
+  {
+    id: 'gemini-3.5-flash',
+    label: 'Gemini 3.5 Flash',
+    badge: 'Previous Default',
+    badgeColor: 'slate',
     audioSupport: 'confirmed',
   },
   {
@@ -49,7 +56,7 @@ const MODELS: ModelOption[] = [
   },
 ];
 
-const DEFAULT_MODEL = 'gemini-3.5-flash';
+const DEFAULT_MODEL = 'gemini-3.6-flash';
 
 const badgeClass = (color: string) => {
   switch (color) {

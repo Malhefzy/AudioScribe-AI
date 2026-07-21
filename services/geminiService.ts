@@ -7,7 +7,7 @@ const getAiClient = () => {
   return new GoogleGenAI({ apiKey });
 };
 
-export const DEFAULT_MODEL = 'gemini-3.5-flash';
+export const DEFAULT_MODEL = 'gemini-3.6-flash';
 const MAX_OUTPUT_TOKENS_PER_CALL = 65536;
 
 const SYSTEM_INSTRUCTION =
